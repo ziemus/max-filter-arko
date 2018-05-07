@@ -3,6 +3,9 @@ bad_args:	.asciiz	"Too few arguemnts, exiting the application..."
 .align 3
 buf:		.space	51840			# == 3 B/pixel * 1920 pixel/row * 9 row
 pad:		.space	3
+max_R:		.space	1
+max_G:		.space	1
+max_B:		.space	1
 .text
 #main:
 	beq	$a0,	3,	args_ok
@@ -106,6 +109,8 @@ read_initial_rows:
 	la	$a1,	buf($t1)
 	move	$a2,	$s3
 	syscall
+	#### if end of file ( $v0 == 0 ) was read then this means there are less than box+1 rows and wee need to end loop
+	beqz	$v0,	filter_prep
 	bne	$v0,	$s3,	quit			# error
 	
 	li	$v0,	14				# read padding
@@ -117,14 +122,14 @@ read_initial_rows:
 	addiu	$t0,	$t0,	1
 	ble	$t0,	$s2,	read_initial_rows
 	
-###	filter_prep	
+filter_prep:	
 # s0 - infile descr, s1 - outfile descr, s2 - box size,
 # s3 - width, s4 - height, s5 - padding in Bytes
 
-# t0 - column number of the filtered pixel, t1 - its row number
-# t2 - min checked column, t3 - max checked column for filtered pixel
-# t4 - min checked row, t5 - max checked row
-# t6 - column of the currently checked pixel t7 - its row
+# t0 - X column number of the filtered pixel, t1 - Y its row number
+# t2 - minX checked column, t3 - maxX checked column for filtered pixel
+# t4 - minY checked row, t5 - maxY checked row
+# t6 - X column of the currently checked pixel t7 - Y its row
 	li	$t0,	0
 	li	$t1,	0
 	li	$t2,	0
@@ -133,39 +138,98 @@ read_initial_rows:
 	li	$t5,	0
 	li	$t6,	0
 	li	$t7,	0
-	mul	$s6,	$s2,	2	# 2*box+1, we'll need that later on
-	addiu	$s6,	$s6,	1
-	sub	$s7,	$s4,	$s2	# height-box
+	mul	$s6,	$s2,	2	
+	addiu	$s6,	$s6,	1	# 2*box+1, we'll need that later on
 
 min_Y_c:
-	sub	$t2,	$t0,	$s2
-	bgez	$t2,	max_Y_c
-	li	$t2,	0
+	sub	$t4,	$t1,	$s2
+	bgez	$t4,	max_Y_c
+	li	$t4,	0
 max_Y_c:
-	sub	$t3,	$t0,	$s2
-	blt	$t3,	$s4,	min_X_c
-	subiu	$t2,	$s4,	1
+	add	$t5,	$t1,	$s2
+	blt	$t5,	$s4,	min_X_c
+	subiu	$t5,	$s4,	1
 min_X_c:
-	sub	$t3,	$t1,	$s2
-	bgez	$t3,	max_Y_c
-	li	$t3,	0
+	sub	$t2,	$t0,	$s2
+	bgez	$t2,	max_X_c
+	li	$t2,	0
 max_X_c:
-	sub	$t3,	$t0,	$s2
-	blt	$t3,	$s3,	filter_inner_loop
-	subiu	$t2,	$s3,	1
-filter_inner_loop:
+	add	$t3,	$t0,	$s2
+	blt	$t3,	$s3,	init_RGB
+	subiu	$t3,	$s3,	1
+init_RGB:
+	#save filtered pixel's RGB 3 bytes into a register; its cooradinates are: t0,t1, so its address is: buf+3*( w*(Y%(2box+1)) +X)
+#	div	$t1,	$s6
+#	mfhi	$t8
+#	mul	$t8,	$t8,	$s3
+#	add	$t8,	$t8,	$t0
+#	mul	$t8,	$t8,	3
+#	
+#	#save 3 bytes following buf($t8) into some other thingy there is no guarantee of alignment so youd better read byte by byte
+#	lb	$t6,	buf($t8)
+#	lb	$t7,	1+buf($t8)
+#	lb	$t9,	2+buf($t8)
+	sb	$zero,	pad
+	sb	$zero,	pad+1
+	sb	$zero,	pad+2	
+init_Y:
+	move	$t7,	$t4
+init_X:
+	move	$t6,	$t2
+locate_pixel_in_box:
+	# now check a single pixel of coordinates (t6,t7) in the picture - locate its address in the buffer
+	div	$t7,	$s6
+	mfhi	$t8
+	mul	$t8,	$t8,	$s3
+	add	$t8,	$t8,	$t6
+	mul	$t8,	$t8,	3
+	#save 3 bytes following buf($t8) into some other thingy there is no guarantee of alignment so youd better read byte by byte
+check_R:
+	lb	$t9,	buf($t8)
+	lb	$s7,	max_R
+	ble	$t9,	$s7,	check_G
+	sb	$t9,	max_R
+check_G:
+	lb	$t9,	1+buf($t8)
+	lb	$s7,	max_G
+	ble	$t9,	$s7,	check_B
+	sb	$t9,	max_G
+check_B:	
+	lb	$t9,	2+buf($t8)
+	lb	$s7,	max_B
+	ble	$t9,	$s7,	check_next_pixel
+	sb	$t9,	max_B
+check_next_pixel:
+	addiu	$t6,	$t6,	1			
+	addiu	$t8,	$t8,	3			# move on to the next pixel in the row, add 3 to the offset, no need to calculate the addres if we're not changing the line
+	ble	$t6,	$t3,	check_R
+	addiu	$t7,	$t7,	1
+	ble	$t7,	$t5,	init_X
+save_pixel:
+	#maxRGB is now found, the only job left to do is now to save the pixel of coordinates (t0,t1) to output
+	li	$v0,	15
+	move	$a0,	$s1
+	la	$a1,	pad
+	li	$a2,	3
+	syscall
+	bltz	$v0,	quit				# error
+filter_next_pixel:	#before branching we need to load another row into the address: buf + 3 * width * [(loop+box+1) % (2*box+1)] and then read padding
+	addiu	$t0,	$t0,	1	# X_filtering ++ ; if < width then calculate maxXc and minXc, zero out max colors, Y's stay the same
+	blt	$t0,	$s3,	min_X_c
 	
-
-filter_inner_loop_end:	#before branching we need to load another row into the address: buf + 3 * width * [(loop+box+1) % (2*box+1)] and then read padding
-	#save filtered line
-	#
-	#
-	#
-	addiu	$t1,	$t1,	1
-	beq	$t1,	$s4,	quit
-	bge	$t1,	$s7,	min_Y_c			# don't load any next lines for iterations >= s7 == height-box	
+	addiu	$t1,	$t1,	1	# otherwise we filtered the whole line and now we need to increment filtered pixel's Y and set its X to 0
+	li	$v0,	15		# and write the offset to the outfile
+	move	$a0,	$s1
+	la	$a1,	pad
+	move	$a2,	$s5
+	syscall
+	bltz	$v0,	quit				# error 
+	beq	$t1,	$s4,	quit	# end the program if its Y is now maximal (==height)
+	
 	li	$t0,	0
-
+	sub	$t8,	$s4,	$s2			# height-box
+	bge	$t1,	$t8,	min_Y_c			# don't load any next lines into the buf for iterations >= height-box
+	
 	add	$t8,	$t1,	$s2
 	div	$t8,	$s6				# s6 already contains 2*box+1
 	mfhi	$t8					# [(loop+box+1) % (2*box+1)]
@@ -174,7 +238,7 @@ filter_inner_loop_end:	#before branching we need to load another row into the ad
 	
 	li	$v0,	14				# read row data
 	la	$a1,	buf($t8)
-	move	$a2,	$s3
+	mul	$a2,	$s2,	3
 	syscall
 	bne	$v0,	$s3,	quit			# error
 	
@@ -184,7 +248,7 @@ filter_inner_loop_end:	#before branching we need to load another row into the ad
 	syscall
 	bne	$v0,	$s5,	quit			# error
 	
-	b	min_Y_c					#on to the next line
+	b	min_Y_c					# on to the next line
 	
 quit:
 #close_out:
