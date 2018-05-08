@@ -54,7 +54,7 @@ args_ok:
 	
 	li	$v0,	13			# open and create the outfile
 	move	$a0,	$s1
-	li	$a1,	9
+	li	$a1,	1
 	syscall
 	move	$s1,	$v0
 	bltz	$s1,	quit			# opening file for writing error
@@ -107,11 +107,11 @@ read_initial_rows:
 	mul	$t1,	$t0,	$s3
 	mul	$t1,	$t1,	3
 	la	$a1,	buf($t1)
-	move	$a2,	$s3
+	mul	$a2,	$s3,	3
 	syscall
 	#### if end of file ( $v0 == 0 ) was read then this means there are less than box+1 rows and wee need to end loop
 	beqz	$v0,	filter_prep
-	bne	$v0,	$s3,	quit			# error
+	bne	$v0,	$a2,	quit			# error
 	
 	li	$v0,	14				# read padding
 	la	$a1,	pad
@@ -158,17 +158,6 @@ max_X_c:
 	blt	$t3,	$s3,	init_RGB
 	subiu	$t3,	$s3,	1
 init_RGB:
-	#save filtered pixel's RGB 3 bytes into a register; its cooradinates are: t0,t1, so its address is: buf+3*( w*(Y%(2box+1)) +X)
-#	div	$t1,	$s6
-#	mfhi	$t8
-#	mul	$t8,	$t8,	$s3
-#	add	$t8,	$t8,	$t0
-#	mul	$t8,	$t8,	3
-#	
-#	#save 3 bytes following buf($t8) into some other thingy there is no guarantee of alignment so youd better read byte by byte
-#	lb	$t6,	buf($t8)
-#	lb	$t7,	1+buf($t8)
-#	lb	$t9,	2+buf($t8)
 	sb	$zero,	pad
 	sb	$zero,	pad+1
 	sb	$zero,	pad+2	
@@ -176,7 +165,7 @@ init_Y:
 	move	$t7,	$t4
 init_X:
 	move	$t6,	$t2
-locate_pixel_in_box:
+###locate_pixel_in_box:
 	# now check a single pixel of coordinates (t6,t7) in the picture - locate its address in the buffer
 	div	$t7,	$s6
 	mfhi	$t8
@@ -185,20 +174,20 @@ locate_pixel_in_box:
 	mul	$t8,	$t8,	3
 	#save 3 bytes following buf($t8) into some other thingy there is no guarantee of alignment so youd better read byte by byte
 check_R:
-	lb	$t9,	buf($t8)
-	lb	$s7,	max_R
+	lbu	$t9,	buf($t8)
+	lbu	$s7,	pad
 	ble	$t9,	$s7,	check_G
-	sb	$t9,	max_R
+	sb	$t9,	pad
 check_G:
-	lb	$t9,	1+buf($t8)
-	lb	$s7,	max_G
+	lbu	$t9,	buf+1($t8)
+	lbu	$s7,	pad+1
 	ble	$t9,	$s7,	check_B
-	sb	$t9,	max_G
+	sb	$t9,	pad+1
 check_B:	
-	lb	$t9,	2+buf($t8)
-	lb	$s7,	max_B
+	lbu	$t9,	buf+2($t8)
+	lbu	$s7,	pad+2
 	ble	$t9,	$s7,	check_next_pixel
-	sb	$t9,	max_B
+	sb	$t9,	pad+2
 check_next_pixel:
 	addiu	$t6,	$t6,	1			
 	addiu	$t8,	$t8,	3			# move on to the next pixel in the row, add 3 to the offset, no need to calculate the addres if we're not changing the line
@@ -237,10 +226,11 @@ filter_next_pixel:	#before branching we need to load another row into the addres
 	mul	$t8,	$t8,	3			# * 3
 	
 	li	$v0,	14				# read row data
+	move	$a0,	$s0
 	la	$a1,	buf($t8)
-	mul	$a2,	$s2,	3
+	mul	$a2,	$s3,	3
 	syscall
-	bne	$v0,	$s3,	quit			# error
+	bne	$v0,	$a2,	quit			# error
 	
 	li	$v0,	14				# read padding
 	la	$a1,	pad
@@ -248,10 +238,14 @@ filter_next_pixel:	#before branching we need to load another row into the addres
 	syscall
 	bne	$v0,	$s5,	quit			# error
 	
-	b	min_Y_c					# on to the next line
+	b	min_Y_c
 	
 quit:
 #close_out:
+	# write eof to outfile
+	#li	$v0,	15
+	#li	$a0,	$s1
+	
 	li	$v0,	16			# close outfile
 	move	$a0,	$s1
 	syscall
